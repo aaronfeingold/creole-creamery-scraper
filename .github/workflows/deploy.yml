@@ -97,28 +97,30 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
+    # STEP 1: Create ECR repository first (without Lambda function)
     - name: Initialize Terraform
       working-directory: terraform
       run: terraform init
 
-    - name: Plan Terraform
+    - name: Plan Terraform (ECR only)
       working-directory: terraform
       env:
         TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
         TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
         TF_VAR_aws_region: ${{ env.AWS_REGION }}
         TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
-      run: terraform plan
+      run: terraform plan -target=aws_ecr_repository.scraper_repo
 
-    - name: Apply Terraform Infrastructure
+    - name: Apply ECR Repository
       working-directory: terraform
       env:
         TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
         TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
         TF_VAR_aws_region: ${{ env.AWS_REGION }}
         TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
-      run: terraform apply -auto-approve
+      run: terraform apply -target=aws_ecr_repository.scraper_repo -auto-approve
 
+    # STEP 2: Build and push Docker image to the now-existing ECR repo
     - name: Build and push Docker image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -133,21 +135,26 @@ jobs:
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-    - name: Update Lambda function
+    # STEP 3: Now apply the rest of the infrastructure (including Lambda)
+    - name: Plan Complete Terraform Infrastructure
+      working-directory: terraform
       env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        ECR_REPOSITORY: ${{ env.FUNCTION_NAME }}
-      run: |
-        aws lambda update-function-code \
-          --function-name ${{ env.FUNCTION_NAME }} \
-          --image-uri $ECR_REGISTRY/$ECR_REPOSITORY:latest \
-          --region ${{ env.AWS_REGION }}
+        TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
+        TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+        TF_VAR_aws_region: ${{ env.AWS_REGION }}
+        TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
+      run: terraform plan
 
-        # Wait for update to complete
-        aws lambda wait function-updated \
-          --function-name ${{ env.FUNCTION_NAME }} \
-          --region ${{ env.AWS_REGION }}
+    - name: Apply Complete Infrastructure
+      working-directory: terraform
+      env:
+        TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
+        TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+        TF_VAR_aws_region: ${{ env.AWS_REGION }}
+        TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
+      run: terraform apply -auto-approve
 
+    # STEP 4: Test the deployed function
     - name: Test deployed function
       run: |
         aws lambda invoke \
@@ -156,7 +163,7 @@ jobs:
           --payload '{}' \
           response.json
 
-        echo "Function test response:"
+        echo "🧪 Function test response:"
         cat response.json
 
     - name: Notify deployment success
