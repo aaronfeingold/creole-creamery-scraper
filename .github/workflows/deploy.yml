@@ -97,30 +97,43 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    # STEP 1: Create ECR repository first (without Lambda function)
     - name: Initialize Terraform
       working-directory: terraform
       run: terraform init
 
-    - name: Plan Terraform (ECR only)
+    # Check if ECR repository already exists and import if needed
+    - name: Check and Import ECR Repository
       working-directory: terraform
       env:
         TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
         TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
         TF_VAR_aws_region: ${{ env.AWS_REGION }}
         TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
-      run: terraform plan -target=aws_ecr_repository.scraper_repo
+      run: |
+        # Check if ECR repo exists
+        if aws ecr describe-repositories --repository-names ${{ env.FUNCTION_NAME }} --region ${{ env.AWS_REGION }} 2>/dev/null; then
+          echo "ECR repository exists, importing into Terraform state..."
 
-    - name: Apply ECR Repository
-      working-directory: terraform
-      env:
-        TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
-        TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-        TF_VAR_aws_region: ${{ env.AWS_REGION }}
-        TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
-      run: terraform apply -target=aws_ecr_repository.scraper_repo -auto-approve
+          # Try to import (will fail silently if already imported)
+          terraform import \
+            -var="neon_database_url=$TF_VAR_neon_database_url" \
+            -var="openai_api_key=$TF_VAR_openai_api_key" \
+            -var="aws_region=$TF_VAR_aws_region" \
+            -var="function_name=$TF_VAR_function_name" \
+            aws_ecr_repository.scraper_repo \
+            ${{ env.FUNCTION_NAME }} || echo "Repository already in state or import failed"
+        else
+          echo "ECR repository doesn't exist, will create it"
 
-    # STEP 2: Build and push Docker image to the now-existing ECR repo
+          # Create just the ECR repository
+          terraform apply -target=aws_ecr_repository.scraper_repo -auto-approve \
+            -var="neon_database_url=$TF_VAR_neon_database_url" \
+            -var="openai_api_key=$TF_VAR_openai_api_key" \
+            -var="aws_region=$TF_VAR_aws_region" \
+            -var="function_name=$TF_VAR_function_name"
+        fi
+
+    # Build and push Docker image to the existing/created ECR repo
     - name: Build and push Docker image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -135,7 +148,9 @@ jobs:
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-    # STEP 3: Now apply the rest of the infrastructure (including Lambda)
+        echo "Successfully pushed image to ECR"
+
+    # Now apply the complete infrastructure
     - name: Plan Complete Terraform Infrastructure
       working-directory: terraform
       env:
@@ -154,16 +169,20 @@ jobs:
         TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
       run: terraform apply -auto-approve
 
-    # STEP 4: Test the deployed function
+    # Test the deployed function
     - name: Test deployed function
       run: |
+        echo "Waiting for function to be ready..."
+        aws lambda wait function-updated --function-name ${{ env.FUNCTION_NAME }} --region ${{ env.AWS_REGION }}
+
+        echo "Testing function..."
         aws lambda invoke \
           --function-name ${{ env.FUNCTION_NAME }} \
           --region ${{ env.AWS_REGION }} \
           --payload '{}' \
           response.json
 
-        echo "🧪 Function test response:"
+        echo "Function test response:"
         cat response.json
 
     - name: Notify deployment success
