@@ -1,0 +1,11 @@
+# AWS Configuration
+aws_region = "us-east-1"
+
+# Function Configuration
+function_name = "creole-creamery-scraper"
+
+# Database Configuration
+neon_database_url = "postgresql://username:password@hostname:port/database"
+
+# OpenAI Configuration
+openai_api_key = "sk-your-openai-api-key-here"
