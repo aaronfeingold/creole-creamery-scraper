@@ -1,0 +1,168 @@
+name: Deploy Creole Creamery Scraper
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Allow manual triggers
+
+env:
+  AWS_REGION: us-east-1
+  FUNCTION_NAME: creole-creamery-scraper
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install Poetry
+      uses: snok/install-poetry@v1
+      with:
+        version: latest
+        virtualenvs-create: true
+        virtualenvs-in-project: true
+
+    - name: Load cached venv
+      id: cached-poetry-dependencies
+      uses: actions/cache@v3
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/poetry.lock') }}
+
+    - name: Install dependencies
+      if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
+      run: poetry install --no-interaction --no-root
+
+    - name: Run tests
+      env:
+        NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      run: |
+        # Add any test commands here
+        poetry run python -c "import lambda_function; print('Code syntax check passed')"
+
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install Poetry
+      uses: snok/install-poetry@v1
+      with:
+        version: latest
+        virtualenvs-create: true
+        virtualenvs-in-project: true
+
+    - name: Install dependencies
+      run: poetry install --only=main --no-interaction --no-root
+
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ~1.0
+
+    - name: Get AWS Account ID
+      id: aws-account
+      run: echo "account-id=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Initialize Terraform
+      working-directory: terraform
+      run: terraform init
+
+    - name: Plan Terraform
+      working-directory: terraform
+      env:
+        TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
+        TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+        TF_VAR_aws_region: ${{ env.AWS_REGION }}
+        TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
+      run: terraform plan
+
+    - name: Apply Terraform Infrastructure
+      working-directory: terraform
+      env:
+        TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
+        TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+        TF_VAR_aws_region: ${{ env.AWS_REGION }}
+        TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
+      run: terraform apply -auto-approve
+
+    - name: Build and push Docker image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: ${{ env.FUNCTION_NAME }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        # Build image
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+
+        # Push to ECR
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+    - name: Update Lambda function
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: ${{ env.FUNCTION_NAME }}
+      run: |
+        aws lambda update-function-code \
+          --function-name ${{ env.FUNCTION_NAME }} \
+          --image-uri $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+          --region ${{ env.AWS_REGION }}
+
+        # Wait for update to complete
+        aws lambda wait function-updated \
+          --function-name ${{ env.FUNCTION_NAME }} \
+          --region ${{ env.AWS_REGION }}
+
+    - name: Test deployed function
+      run: |
+        aws lambda invoke \
+          --function-name ${{ env.FUNCTION_NAME }} \
+          --region ${{ env.AWS_REGION }} \
+          --payload '{}' \
+          response.json
+
+        echo "Function test response:"
+        cat response.json
+
+    - name: Notify deployment success
+      if: success()
+      run: |
+        echo "Deployment completed successfully!"
+        echo "Function: ${{ env.FUNCTION_NAME }}"
+        echo "Region: ${{ env.AWS_REGION }}"
+        echo "Commit: ${{ github.sha }}"
