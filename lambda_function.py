@@ -1,11 +1,9 @@
 import json
 import os
-import re
 import requests
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Optional
 import psycopg2
-from psycopg2.extras import RealDictCursor
 import openai
 from dataclasses import dataclass
 from bs4 import BeautifulSoup
@@ -264,6 +262,10 @@ class CreoleCreameryLLMScraper:
         if not new_entries:
             return 0
 
+        # Sort new entries by participant_number in ascending order (oldest first)
+        # This ensures that database ID ordering matches chronological ordering
+        new_entries = sorted(new_entries, key=lambda x: x.participant_number)
+
         try:
             with psycopg2.connect(self.db_url) as conn:
                 with conn.cursor() as cur:
@@ -282,7 +284,7 @@ class CreoleCreameryLLMScraper:
                     """
                     )
 
-                    # Insert new entries
+                    # Insert new entries in chronological order (oldest first)
                     for entry in new_entries:
                         cur.execute(
                             """
