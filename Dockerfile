@@ -16,7 +16,7 @@ COPY pyproject.toml poetry.lock* ./
 RUN poetry config virtualenvs.create false
 
 # Install dependencies
-RUN poetry install --only=main --no-dev
+RUN poetry install --only=main
 
 # Copy function code
 COPY lambda_function.py ${LAMBDA_TASK_ROOT}/
