@@ -21,8 +21,5 @@ RUN poetry install --only=main --no-dev
 # Copy function code
 COPY lambda_function.py ${LAMBDA_TASK_ROOT}/
 
-# Copy any additional modules if needed
-COPY scraper/ ${LAMBDA_TASK_ROOT}/scraper/ 2>/dev/null || true
-
 # Set the CMD to your handler
 CMD ["lambda_function.lambda_handler"]
