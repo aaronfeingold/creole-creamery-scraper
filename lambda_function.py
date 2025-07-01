@@ -3,10 +3,12 @@ import os
 import re
 import requests
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Dict, Optional
 import psycopg2
+from psycopg2.extras import RealDictCursor
 import openai
 from dataclasses import dataclass
+from bs4 import BeautifulSoup
 
 
 @dataclass
@@ -32,38 +34,93 @@ class CreoleCreameryLLMScraper:
         except requests.RequestException as e:
             raise Exception(f"Failed to fetch page content: {str(e)}")
 
+    def extract_with_beautiful_soup(self, html_content: str) -> List[HallOfFameEntry]:
+        """Extract data using Beautiful Soup to parse the HTML table."""
+        try:
+            soup = BeautifulSoup(html_content, "html.parser")
+
+            # Find the table with the hall of fame data
+            tbody = soup.find("tbody", class_="row-hover")
+            if not tbody:
+                print("Could not find tbody with class 'row-hover'")
+                return self._fallback_regex_parse(html_content)
+
+            entries = []
+            rows = tbody.find_all("tr")
+
+            for row in rows:
+                cells = row.find_all("td")
+                if len(cells) >= 3:
+                    try:
+                        # Extract data from table cells
+                        number_text = cells[0].get_text(strip=True)
+                        name_text = cells[1].get_text(
+                            separator=" ", strip=True
+                        )  # Handle <br> tags
+                        date_text = cells[2].get_text(strip=True)
+
+                        # Clean up the data
+                        participant_number = int(number_text)
+                        name = name_text.upper()  # Ensure consistency
+                        date = date_text
+
+                        parsed_date = self._parse_date(date)
+
+                        entry = HallOfFameEntry(
+                            participant_number=participant_number,
+                            name=name,
+                            date=date,
+                            parsed_date=parsed_date,
+                        )
+                        entries.append(entry)
+
+                    except (ValueError, IndexError) as e:
+                        print(f"Skipping row due to parsing error: {str(e)}")
+                        continue
+
+            print(f"Successfully extracted {len(entries)} entries using Beautiful Soup")
+            return sorted(entries, key=lambda x: x.participant_number, reverse=True)
+
+        except Exception as e:
+            print(f"Beautiful Soup parsing failed: {str(e)}, falling back to regex")
+            return self._fallback_regex_parse(html_content)
+
     def extract_with_llm(self, html_content: str) -> List[HallOfFameEntry]:
-        """Use LLM to extract structured data from the HTML content."""
+        """Use LLM to extract structured data from the HTML content (fallback method)."""
 
-        # Create a focused prompt for the LLM
+        # For LLM, let's extract just the table portion to save tokens
+        soup = BeautifulSoup(html_content, "html.parser")
+        tbody = soup.find("tbody", class_="row-hover")
+
+        if tbody:
+            table_html = str(tbody)[:4000]  # Limit to 4000 chars to save tokens
+        else:
+            table_html = html_content[:4000]
+
         prompt = f"""
-        Extract all hall of fame entries from this HTML content. Each entry follows the pattern:
-        NUMBER | NAME | DATE |
+        Extract all hall of fame entries from this HTML table. Each row has 3 columns:
+        1. Participant number (integer)
+        2. Name (may contain line breaks)
+        3. Date (M/D/YY format)
 
-        Parse each entry and return ONLY a valid JSON array with this exact structure:
+        Return ONLY a valid JSON array with this structure:
         [
             {{
                 "participant_number": 748,
                 "name": "PHILLIP FANGUE",
                 "date": "5/11/25"
-            }},
-            {{
-                "participant_number": 747,
-                "name": "LOGAN ARNOLD",
-                "date": "4/28/25"
             }}
         ]
 
         Rules:
-        1. Extract ALL entries from the content
+        1. Extract ALL entries from the table
         2. participant_number should be an integer
-        3. name should be the full name in CAPS as shown
-        4. date should be the exact date string as shown (M/D/YY or MM/DD/YY format)
-        5. Skip any headers, descriptions, or non-entry text
-        6. Return ONLY the JSON array, no other text
+        3. name should be cleaned of HTML tags and line breaks
+        4. date should be the exact date string as shown
+        5. Return ONLY the JSON array, no other text
 
-        HTML Content:
-        {html_content[:8000]}  # Truncate to avoid token limits
+        HTML Table:
+        {table_html}
         """
 
         try:
@@ -82,7 +139,7 @@ class CreoleCreameryLLMScraper:
 
             response_text = response.choices[0].message.content.strip()
 
-            # Clean up the response - remove any markdown formatting
+            # Clean up the response
             if response_text.startswith("```json"):
                 response_text = response_text[7:]
             if response_text.endswith("```"):
@@ -96,16 +153,16 @@ class CreoleCreameryLLMScraper:
                 parsed_date = self._parse_date(entry_data["date"])
                 entry = HallOfFameEntry(
                     participant_number=int(entry_data["participant_number"]),
-                    name=entry_data["name"].strip(),
+                    name=entry_data["name"].strip().upper(),
                     date=entry_data["date"],
                     parsed_date=parsed_date,
                 )
                 entries.append(entry)
 
+            print(f"Successfully extracted {len(entries)} entries using LLM")
             return sorted(entries, key=lambda x: x.participant_number, reverse=True)
 
         except (json.JSONDecodeError, KeyError, ValueError) as e:
-            # Fallback to regex parsing if LLM fails
             print(f"LLM parsing failed: {str(e)}, falling back to regex")
             return self._fallback_regex_parse(html_content)
 
@@ -130,24 +187,43 @@ class CreoleCreameryLLMScraper:
             return datetime(1970, 1, 1)
 
     def _fallback_regex_parse(self, html_content: str) -> List[HallOfFameEntry]:
-        """Fallback regex parsing if LLM fails."""
+        """Fallback regex parsing for HTML table structure."""
         entries = []
-        # Pattern: NUMBER | NAME | DATE |
-        pattern = r"(\d+)\s*\|\s*([^|]+?)\s*\|\s*(\d{1,2}/\d{1,2}/\d{2,4})\s*\|"
 
-        matches = re.findall(pattern, html_content)
+        # Updated pattern for HTML table structure
+        # Look for <td> tags with the data
+        soup = BeautifulSoup(html_content, "html.parser")
 
-        for match in matches:
-            number, name, date = match
-            parsed_date = self._parse_date(date.strip())
-            entry = HallOfFameEntry(
-                participant_number=int(number),
-                name=name.strip(),
-                date=date.strip(),
-                parsed_date=parsed_date,
-            )
-            entries.append(entry)
+        # Find all table rows
+        rows = soup.find_all("tr")
 
+        for row in rows:
+            cells = row.find_all("td")
+            if len(cells) >= 3:
+                try:
+                    number_text = cells[0].get_text(strip=True)
+                    name_text = cells[1].get_text(separator=" ", strip=True)
+                    date_text = cells[2].get_text(strip=True)
+
+                    # Extract number, handling extra spaces
+                    participant_number = int(number_text.strip())
+                    name = name_text.upper().strip()
+                    date = date_text.strip()
+
+                    parsed_date = self._parse_date(date)
+
+                    entry = HallOfFameEntry(
+                        participant_number=participant_number,
+                        name=name,
+                        date=date,
+                        parsed_date=parsed_date,
+                    )
+                    entries.append(entry)
+
+                except (ValueError, IndexError):
+                    continue
+
+        print(f"Regex fallback extracted {len(entries)} entries")
         return sorted(entries, key=lambda x: x.participant_number, reverse=True)
 
     def get_last_entry_from_db(self) -> Optional[int]:
@@ -155,6 +231,21 @@ class CreoleCreameryLLMScraper:
         try:
             with psycopg2.connect(self.db_url) as conn:
                 with conn.cursor() as cur:
+                    # Check if table exists first
+                    cur.execute(
+                        """
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.tables
+                            WHERE table_name = 'hall_of_fame_entries'
+                        );
+                    """
+                    )
+                    table_exists = cur.fetchone()[0]
+
+                    if not table_exists:
+                        print("Table doesn't exist yet, treating as first run")
+                        return 0
+
                     cur.execute(
                         "SELECT MAX(participant_number) FROM hall_of_fame_entries"
                     )
@@ -228,8 +319,8 @@ def lambda_handler(event, context):
         # Fetch the page content
         html_content = scraper.fetch_page_content()
 
-        # Extract entries using LLM
-        entries = scraper.extract_with_llm(html_content)
+        # Extract entries using Beautiful Soup (primary method)
+        entries = scraper.extract_with_beautiful_soup(html_content)
 
         # Get last saved entry number
         last_saved_number = scraper.get_last_entry_from_db()
