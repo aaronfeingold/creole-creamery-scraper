@@ -8,15 +8,22 @@ def _normalize_age_to_days(age_text: str) -> Optional[int]:
     """Convert age text like '11 YEARS 5 MONTHS 21 DAYS' or '10 YRS OLD' to total days."""
     try:
         total_days = 0
-        years_match = re.search(r"(\d+)\s+(?:YEARS?|YRS?)", age_text)
+
+        # Extract years - handle YEARS, YRS, YR patterns
+        years_match = re.search(r"(\d+)\s+(?:YEARS?|YRS?|YR)", age_text)
         if years_match:
             total_days += int(years_match.group(1)) * 365
-        months_match = re.search(r"(\d+)\s+MONTHS?", age_text)
+
+        # Extract months - handle MONTHS, MNTH, M patterns
+        months_match = re.search(r"(\d+)\s+(?:MONTHS?|MNTH|M)", age_text)
         if months_match:
-            total_days += int(months_match.group(1)) * 30
-        days_match = re.search(r"(\d+)\s+DAYS?", age_text)
+            total_days += int(months_match.group(1)) * 30  # Approximate
+
+        # Extract days - handle DAYS, D patterns
+        days_match = re.search(r"(\d+)\s+(?:DAYS?|D)", age_text)
         if days_match:
             total_days += int(days_match.group(1))
+
         return total_days if total_days > 0 else None
     except (ValueError, AttributeError):
         return None
@@ -56,7 +63,7 @@ def parse_name_and_notes(
     """Parse existing name field and extract notes, age, time, completion count."""
     cleaned = raw_name.strip().upper()
 
-    # Check for comma-separated patterns (completion count, etc.)
+    # Check for comma-separated patterns (completion count, age, etc.)
     if "," in cleaned:
         parts = cleaned.split(",", 1)
         name_part = parts[0].strip()
@@ -67,13 +74,18 @@ def parse_name_and_notes(
             completion_count = _extract_completion_count(potential_note)
             return name_part, potential_note, None, None, completion_count
 
+        # Age patterns after comma: "11 YEARS 5 MONTHS 21 DAYS", "10 YRS", etc.
+        age_days = _normalize_age_to_days(potential_note)
+        if age_days is not None:
+            return name_part, potential_note, age_days, None, None
+
         return cleaned, None, None, None, None
 
     # Check for patterns at the end of the name (no comma)
 
-    # Age pattern: "11 YEARS 5 MONTHS 21 DAYS" or "10 YRS OLD"
+    # Age pattern: "11 YEARS 5 MONTHS 21 DAYS" or "10 YRS OLD" or "5 YR 3 M 15 D"
     age_match = re.search(
-        r"\s+(\d+\s+(?:YEARS?|YRS?)(?:\s+\d+\s+MONTHS?)?(?:\s+\d+\s+DAYS?)?(?:\s+OLD)?)$",
+        r"\s+(\d+\s+(?:YEARS?|YRS?|YR)(?:\s+\d+\s+(?:MONTHS?|MNTH|M))?(?:\s+\d+\s+(?:DAYS?|D))?(?:\s+OLD)?)$",
         cleaned,
     )
     if age_match:

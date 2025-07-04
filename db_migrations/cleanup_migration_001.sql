@@ -15,7 +15,7 @@ SELECT
 FROM hall_of_fame_entries;
 
 -- Show examples of parsed data from migration_001
-SELECT name, notes, age, elapsed_time, completion_count, original_name
+SELECT name, notes, age, elapsed_time, completion_count
 FROM hall_of_fame_entries
 WHERE notes IS NOT NULL OR age IS NOT NULL OR elapsed_time IS NOT NULL OR completion_count IS NOT NULL
 LIMIT 50;
