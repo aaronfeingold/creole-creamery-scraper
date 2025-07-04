@@ -18,4 +18,4 @@ FROM hall_of_fame_entries;
 SELECT name, notes, age, elapsed_time, completion_count, original_name
 FROM hall_of_fame_entries
 WHERE notes IS NOT NULL OR age IS NOT NULL OR elapsed_time IS NOT NULL OR completion_count IS NOT NULL
-LIMIT 10;
+LIMIT 50;
