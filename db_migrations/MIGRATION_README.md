@@ -5,7 +5,7 @@ This guide explains how to safely migrate existing database data by adding new c
 ## Migration Files
 
 - `migration_001_add_parsing_columns.sql` - Adds new columns to the database
-- `migrate_date_migration_001.py` - Python script to transform existing data and populate new columns
+- `migrate_data_migration_001.py` - python script to transform existing data and populate new columns
 - `cleanup_migration_001.sql` - Optional cleanup script to remove backup columns
 
 ## Migration Process
@@ -15,7 +15,7 @@ This guide explains how to safely migrate existing database data by adding new c
 First, preview what the migration would do without making any changes:
 
 ```bash
-python migrate_date_migration_001.py preview
+poetry run python migrate_data_migration_001.py preview
 ```
 
 This will show you sample records and how they would be transformed.
@@ -25,7 +25,7 @@ This will show you sample records and how they would be transformed.
 Add the new columns to your database:
 
 ```bash
-psql $DATABASE_URL -f migration_001_add_parsing_columns.sql
+psql $DATABASE_URL -f db_migrations/migration_001_add_parsing_columns.sql
 ```
 
 This will:
@@ -39,7 +39,7 @@ This will:
 Transform existing data and populate the new columns:
 
 ```bash
-python migrate_date_migration_001.py migrate
+poetry run python db_migrations/migrate_data_migration_001.py migrate
 ```
 
 This will:
@@ -54,7 +54,7 @@ This will:
 Check that the migration worked correctly:
 
 ```bash
-python migrate_date_migration_001.py verify
+poetry run python db_migrations/migrate_data_migration_001.py verify
 ```
 
 This will show:
@@ -68,7 +68,7 @@ This will show:
 If something went wrong, you can rollback:
 
 ```bash
-python migrate_date_migration_001.py rollback
+poetry run python migrate_data_migration_001.py rollback
 ```
 
 This will restore the original data and clear the new columns.
@@ -78,7 +78,7 @@ This will restore the original data and clear the new columns.
 After confirming the migration worked correctly, you can optionally remove backup columns:
 
 ```bash
-psql $DATABASE_URL -f cleanup_migration_001.sql
+psql $DATABASE_URL -f db_migrations/cleanup_migration_001.sql
 ```
 
 ## Example: Data Transformation Patterns
