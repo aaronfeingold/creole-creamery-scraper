@@ -3,6 +3,12 @@
 
 set -e
 
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Navigate to the project root (parent of CICD directory)
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT"
+
 # Configuration
 AWS_REGION="${AWS_REGION:-us-east-1}"
 FUNCTION_NAME="${FUNCTION_NAME:-creole-creamery-scraper}"
@@ -10,6 +16,7 @@ AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 ECR_REPO_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${FUNCTION_NAME}"
 
 echo "Starting deployment for ${FUNCTION_NAME}"
+echo "Working directory: $(pwd)"
 
 # Check required environment variables
 if [[ -z "$NEON_DATABASE_URL" ]]; then
@@ -60,7 +67,7 @@ echo "Building and pushing Docker image..."
 # Login to ECR
 aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO_URI
 
-# Build the image
+# Build the image (using project root as context)
 docker build -t $FUNCTION_NAME .
 
 # Tag for ECR
