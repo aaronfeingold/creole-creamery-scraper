@@ -35,18 +35,18 @@ class CreoleCreameryLLMScraper:
         try:
             total_days = 0
 
-            # Extract years - handle both "YEARS" and "YRS" patterns
-            years_match = re.search(r"(\d+)\s+(?:YEARS?|YRS?)", age_text)
+            # Extract years - handle YEARS, YRS, YR patterns
+            years_match = re.search(r"(\d+)\s+(?:YEARS?|YRS?|YR)", age_text)
             if years_match:
                 total_days += int(years_match.group(1)) * 365
 
-            # Extract months
-            months_match = re.search(r"(\d+)\s+MONTHS?", age_text)
+            # Extract months - handle MONTHS, MNTH, M patterns
+            months_match = re.search(r"(\d+)\s+(?:MONTHS?|MNTH|M)", age_text)
             if months_match:
                 total_days += int(months_match.group(1)) * 30  # Approximate
 
-            # Extract days
-            days_match = re.search(r"(\d+)\s+DAYS?", age_text)
+            # Extract days - handle DAYS, D patterns
+            days_match = re.search(r"(\d+)\s+(?:DAYS?|D)", age_text)
             if days_match:
                 total_days += int(days_match.group(1))
 
@@ -98,15 +98,17 @@ class CreoleCreameryLLMScraper:
 
         Examples:
             "Bob Jones, 2nd time" -> ("BOB JONES", "2nd time", None, None, 2)
+            "JAMES JONES, 11 YEARS 5 MONTHS 21 DAYS" -> ("JAMES JONES", "11 YEARS 5 MONTHS 21 DAYS", 4196, None, None)
             "Jill Smith 11 YEARS 5 MONTHS 21 DAYS" -> ("JILL SMITH", "11 YEARS 5 MONTHS 21 DAYS", 4196, None, None)
             "STEVEN HAMMOND 7 MINUTES" -> ("STEVEN HAMMOND", "7 MINUTES", None, 420, None)
             "JOHN VALDESPINO 6 MINUTES 40 SECONDS" -> ("JOHN VALDESPINO", "6 MINUTES 40 SECONDS", None, 400, None)
             "Jane Smith" -> ("JANE SMITH", None, None, None, None)
+            "John Doe 5 YR 3 M 15 D" -> ("JOHN DOE", "5 YR 3 M 15 D", 1890, None, None)
         """
         # Clean up the raw name first
         cleaned = raw_name.strip().upper()
 
-        # First check for comma-separated patterns (completion count, etc.)
+        # First check for comma-separated patterns (completion count, age, etc.)
         if "," in cleaned:
             parts = cleaned.split(",", 1)  # Split on first comma only
             name_part = parts[0].strip()
@@ -117,14 +119,19 @@ class CreoleCreameryLLMScraper:
                 completion_count = self._extract_completion_count(potential_note)
                 return name_part, potential_note, None, None, completion_count
 
+            # Age patterns after comma: "11 YEARS 5 MONTHS 21 DAYS", "10 YRS", etc.
+            age_days = self._normalize_age_to_days(potential_note)
+            if age_days is not None:
+                return name_part, potential_note, age_days, None, None
+
             # If no pattern matches, treat the whole thing as the name
             return cleaned, None, None, None, None
 
         # Now check for patterns at the end of the name (no comma)
 
-        # Age pattern: "11 YEARS 5 MONTHS 21 DAYS" or "10 YRS OLD"
+        # Age pattern: "11 YEARS 5 MONTHS 21 DAYS" or "10 YRS OLD" or "5 YR 3 M 15 D"
         age_match = re.search(
-            r"\s+(\d+\s+(?:YEARS?|YRS?)(?:\s+\d+\s+MONTHS?)?(?:\s+\d+\s+DAYS?)?(?:\s+OLD)?)$",
+            r"\s+(\d+\s+(?:YEARS?|YRS?|YR)(?:\s+\d+\s+(?:MONTHS?|MNTH|M))?(?:\s+\d+\s+(?:DAYS?|D))?(?:\s+OLD)?)$",
             cleaned,
         )
         if age_match:
@@ -491,6 +498,7 @@ if __name__ == "__main__":
         test_cases = [
             "Bob Jones, 2nd time",  # Completion count with comma
             "Mike Stevens, 3rd time",  # Completion count with comma
+            "JAMES JONES, 11 YEARS 5 MONTHS 21 DAYS",  # Age pattern with comma (new scenario)
             "Jill Smith 11 YEARS 5 MONTHS 21 DAYS",  # Age pattern (real format)
             "STEVEN HAMMOND 7 MINUTES",  # Time pattern (real format)
             "JOHN VALDESPINO 6 MINUTES 40 SECONDS",  # Time with seconds (real format)
@@ -499,6 +507,9 @@ if __name__ == "__main__":
             "Sarah Johnson, 1st time",  # First time completion
             "Tom Davis 15 YEARS",  # Age without months/days
             "Alice Wilson 3 MINUTES 15 SECONDS",  # Another time example
+            "John Doe 5 YR 3 M 15 D",  # Age with abbreviated units
+            "Mary Smith 10 YRS 2 MNTH",  # Age with MNTH abbreviation
+            "Bob Wilson, 7 YR 1 D",  # Age with comma and abbreviated units
         ]
 
         for test_name in test_cases:
