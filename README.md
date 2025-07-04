@@ -122,7 +122,7 @@ terraform apply
 cd ..
 
 # Make deploy script executable
-chmod +x deploy.sh
+chmod +x CICD/deploy.sh
 
 # Set environment variables and deploy
 export NEON_DATABASE_URL="your-database-url"
@@ -131,7 +131,7 @@ export AWS_REGION="us-east-1"
 export FUNCTION_NAME="creole-creamery-scraper"
 
 # Run deployment
-./deploy.sh
+./CICD/deploy.sh
 ```
 
 ## Local Testing
@@ -141,7 +141,7 @@ Before deploying, test the scraper locally:
 ```bash
 # Ensure .env file is configured
 poetry shell
-python test_scraper.py
+python tests/test_scraper.py
 ```
 
 The test script will:
@@ -154,11 +154,13 @@ The test script will:
 ```
 creole-creamery-scraper/
 ├── lambda_function.py          # Main Lambda handler and scraper logic
-├── test_scraper.py            # Local testing script
-├── deploy.sh                  # Complete deployment script
 ├── Dockerfile                 # Container image definition
 ├── pyproject.toml            # Python dependencies and config
 ├── .env                      # Environment variables (create from example)
+├── CICD/
+│   └── deploy.sh             # Complete deployment script
+└─── tests/
+   ├── test_scraper.py            # Local testing script
 └── terraform/
     ├── main.tf               # Terraform infrastructure definition
     ├── terraform.tfvars.example  # Example configuration
@@ -235,7 +237,7 @@ Adjust Lambda configuration in `terraform/main.tf`:
 
 Check the following for debugging:
 1. CloudWatch logs: `/aws/lambda/creole-creamery-scraper`
-2. Test locally: `python test_scraper.py`
+2. Test locally: `python tests/test_scraper.py`
 3. Verify environment variables are set correctly
 
 ## Cost Considerations
