@@ -31,12 +31,12 @@ class CreoleCreameryLLMScraper:
         self.base_url = "https://creolecreamery.com/hall-of-fame/"
 
     def _normalize_age_to_days(self, age_text: str) -> Optional[int]:
-        """Convert age text like '11 YEARS 5 MONTHS 21 DAYS' to total days."""
+        """Convert age text like '11 YEARS 5 MONTHS 21 DAYS' or '10 YRS OLD' to total days."""
         try:
             total_days = 0
 
-            # Extract years
-            years_match = re.search(r"(\d+)\s+YEARS?", age_text)
+            # Extract years - handle both "YEARS" and "YRS" patterns
+            years_match = re.search(r"(\d+)\s+(?:YEARS?|YRS?)", age_text)
             if years_match:
                 total_days += int(years_match.group(1)) * 365
 
@@ -122,9 +122,10 @@ class CreoleCreameryLLMScraper:
 
         # Now check for patterns at the end of the name (no comma)
 
-        # Age pattern: "11 YEARS 5 MONTHS 21 DAYS"
+        # Age pattern: "11 YEARS 5 MONTHS 21 DAYS" or "10 YRS OLD"
         age_match = re.search(
-            r"\s+(\d+\s+YEARS?(?:\s+\d+\s+MONTHS?)?(?:\s+\d+\s+DAYS?)?)$", cleaned
+            r"\s+(\d+\s+(?:YEARS?|YRS?)(?:\s+\d+\s+MONTHS?)?(?:\s+\d+\s+DAYS?)?(?:\s+OLD)?)$",
+            cleaned,
         )
         if age_match:
             note = age_match.group(1)
@@ -174,6 +175,7 @@ class CreoleCreameryLLMScraper:
                 if len(cells) >= 3:
                     try:
                         # Extract data from table cells
+                        print(cells)
                         number_text = cells[0].get_text(strip=True)
                         name_text = cells[1].get_text(
                             separator=" ", strip=True
