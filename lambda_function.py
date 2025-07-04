@@ -2,11 +2,12 @@ import json
 import os
 import requests
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import psycopg2
 import openai
 from dataclasses import dataclass
 from bs4 import BeautifulSoup
+import re
 
 
 @dataclass
@@ -15,6 +16,12 @@ class HallOfFameEntry:
     name: str
     date: str
     parsed_date: datetime
+    notes: Optional[str] = None
+    age: Optional[int] = None  # Age in total days
+    elapsed_time: Optional[int] = None  # Elapsed time in total seconds
+    completion_count: Optional[int] = (
+        None  # Completion number from notes (1st, 2nd, 3rd, etc.)
+    )
 
 
 class CreoleCreameryLLMScraper:
@@ -22,6 +29,119 @@ class CreoleCreameryLLMScraper:
         self.openai_client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
         self.db_url = os.environ["NEON_DATABASE_URL"]
         self.base_url = "https://creolecreamery.com/hall-of-fame/"
+
+    def _normalize_age_to_days(self, age_text: str) -> Optional[int]:
+        """Convert age text like '11 YEARS 5 MONTHS 21 DAYS' to total days."""
+        try:
+            total_days = 0
+
+            # Extract years
+            years_match = re.search(r"(\d+)\s+YEARS?", age_text)
+            if years_match:
+                total_days += int(years_match.group(1)) * 365
+
+            # Extract months
+            months_match = re.search(r"(\d+)\s+MONTHS?", age_text)
+            if months_match:
+                total_days += int(months_match.group(1)) * 30  # Approximate
+
+            # Extract days
+            days_match = re.search(r"(\d+)\s+DAYS?", age_text)
+            if days_match:
+                total_days += int(days_match.group(1))
+
+            return total_days if total_days > 0 else None
+        except (ValueError, AttributeError):
+            return None
+
+    def _normalize_time_to_seconds(self, time_text: str) -> Optional[int]:
+        """Convert time text like '6 MINUTES 40 SECONDS' to total seconds."""
+        try:
+            total_seconds = 0
+
+            # Extract minutes
+            minutes_match = re.search(r"(\d+)\s+MINUTES?", time_text)
+            if minutes_match:
+                total_seconds += int(minutes_match.group(1)) * 60
+
+            # Extract seconds
+            seconds_match = re.search(r"(\d+)\s+SECONDS?", time_text)
+            if seconds_match:
+                total_seconds += int(seconds_match.group(1))
+
+            return total_seconds if total_seconds > 0 else None
+        except (ValueError, AttributeError):
+            return None
+
+    def _extract_completion_count(self, notes_text: str) -> Optional[int]:
+        """Extract completion count from notes like '2ND TIME', '3RD TIME', etc."""
+        if not notes_text:
+            return None
+
+        try:
+            # Look for patterns like "2ND TIME", "3RD TIME", etc.
+            match = re.search(r"(\d+)(ST|ND|RD|TH)\s+TIME", notes_text.upper())
+            if match:
+                return int(match.group(1))
+            return None
+        except (ValueError, AttributeError):
+            return None
+
+    def parse_name_and_notes(
+        self, raw_name: str
+    ) -> Tuple[str, Optional[str], Optional[int], Optional[int], Optional[int]]:
+        """
+        Parse a name and extract any notes (completion count, age, time, etc.).
+
+        Returns:
+            Tuple of (cleaned_name, notes, age_in_days, elapsed_time_in_seconds, completion_count)
+
+        Examples:
+            "Bob Jones, 2nd time" -> ("BOB JONES", "2nd time", None, None, 2)
+            "Jill Smith 11 YEARS 5 MONTHS 21 DAYS" -> ("JILL SMITH", "11 YEARS 5 MONTHS 21 DAYS", 4196, None, None)
+            "STEVEN HAMMOND 7 MINUTES" -> ("STEVEN HAMMOND", "7 MINUTES", None, 420, None)
+            "JOHN VALDESPINO 6 MINUTES 40 SECONDS" -> ("JOHN VALDESPINO", "6 MINUTES 40 SECONDS", None, 400, None)
+            "Jane Smith" -> ("JANE SMITH", None, None, None, None)
+        """
+        # Clean up the raw name first
+        cleaned = raw_name.strip().upper()
+
+        # First check for comma-separated patterns (completion count, etc.)
+        if "," in cleaned:
+            parts = cleaned.split(",", 1)  # Split on first comma only
+            name_part = parts[0].strip()
+            potential_note = parts[1].strip()
+
+            # Completion count patterns: "2nd time", "3rd time", etc.
+            if re.match(r"^\d+(ST|ND|RD|TH)\s+TIME$", potential_note):
+                completion_count = self._extract_completion_count(potential_note)
+                return name_part, potential_note, None, None, completion_count
+
+            # If no pattern matches, treat the whole thing as the name
+            return cleaned, None, None, None, None
+
+        # Now check for patterns at the end of the name (no comma)
+
+        # Age pattern: "11 YEARS 5 MONTHS 21 DAYS"
+        age_match = re.search(
+            r"\s+(\d+\s+YEARS?(?:\s+\d+\s+MONTHS?)?(?:\s+\d+\s+DAYS?)?)$", cleaned
+        )
+        if age_match:
+            note = age_match.group(1)
+            name = cleaned[: age_match.start()].strip()
+            age_days = self._normalize_age_to_days(note)
+            return name, note, age_days, None, None
+
+        # Time patterns: "7 MINUTES" or "6 MINUTES 40 SECONDS"
+        time_match = re.search(r"\s+(\d+\s+MINUTES?(?:\s+\d+\s+SECONDS?)?)$", cleaned)
+        if time_match:
+            note = time_match.group(1)
+            name = cleaned[: time_match.start()].strip()
+            elapsed_seconds = self._normalize_time_to_seconds(note)
+            return name, note, None, elapsed_seconds, None
+
+        # No patterns found, return the whole name
+        return cleaned, None, None, None, None
 
     def fetch_page_content(self) -> str:
         """Fetch the raw HTML content from the hall of fame page."""
@@ -41,7 +161,10 @@ class CreoleCreameryLLMScraper:
             tbody = soup.find("tbody", class_="row-hover")
             if not tbody:
                 print("Could not find tbody with class 'row-hover'")
-                return self._fallback_regex_parse(html_content)
+                raise Exception(
+                    "HTML structure has changed: Could not find tbody with class 'row-hover'. "
+                    "The website may have been updated."
+                )
 
             entries = []
             rows = tbody.find_all("tr")
@@ -57,10 +180,12 @@ class CreoleCreameryLLMScraper:
                         )  # Handle <br> tags
                         date_text = cells[2].get_text(strip=True)
 
-                        # Clean up the data
-                        participant_number = int(number_text)
-                        name = name_text.upper()  # Ensure consistency
-                        date = date_text
+                        # Extract number, handling extra spaces
+                        participant_number = int(number_text.strip())
+                        name, notes, age_days, elapsed_seconds, completion_count = (
+                            self.parse_name_and_notes(name_text)
+                        )
+                        date = date_text.strip()
 
                         parsed_date = self._parse_date(date)
 
@@ -69,6 +194,10 @@ class CreoleCreameryLLMScraper:
                             name=name,
                             date=date,
                             parsed_date=parsed_date,
+                            notes=notes,
+                            age=age_days,
+                            elapsed_time=elapsed_seconds,
+                            completion_count=completion_count,
                         )
                         entries.append(entry)
 
@@ -80,8 +209,8 @@ class CreoleCreameryLLMScraper:
             return sorted(entries, key=lambda x: x.participant_number, reverse=True)
 
         except Exception as e:
-            print(f"Beautiful Soup parsing failed: {str(e)}, falling back to regex")
-            return self._fallback_regex_parse(html_content)
+            print(f"Beautiful Soup parsing failed: {str(e)}")
+            raise Exception(f"HTML parsing failed: {str(e)}")
 
     # DEPRECATED: LOL passing all the html to LLM too expensive $$$ i can just use beautiful soup, who cares
     # saving for posterity
@@ -151,11 +280,18 @@ class CreoleCreameryLLMScraper:
             entries = []
             for entry_data in entries_data:
                 parsed_date = self._parse_date(entry_data["date"])
+                name, notes, age_days, elapsed_seconds, completion_count = (
+                    self.parse_name_and_notes(entry_data["name"])
+                )
                 entry = HallOfFameEntry(
                     participant_number=int(entry_data["participant_number"]),
-                    name=entry_data["name"].strip().upper(),
+                    name=name,
                     date=entry_data["date"],
                     parsed_date=parsed_date,
+                    notes=notes,
+                    age=age_days,
+                    elapsed_time=elapsed_seconds,
+                    completion_count=completion_count,
                 )
                 entries.append(entry)
 
@@ -163,8 +299,8 @@ class CreoleCreameryLLMScraper:
             return sorted(entries, key=lambda x: x.participant_number, reverse=True)
 
         except (json.JSONDecodeError, KeyError, ValueError) as e:
-            print(f"LLM parsing failed: {str(e)}, falling back to regex")
-            return self._fallback_regex_parse(html_content)
+            print(f"LLM parsing failed: {str(e)}")
+            raise Exception(f"LLM parsing failed: {str(e)}")
 
     def _parse_date(self, date_str: str) -> datetime:
         """Parse date string to datetime object, handling 2-digit years."""
@@ -240,6 +376,10 @@ class CreoleCreameryLLMScraper:
                             name VARCHAR(255) NOT NULL,
                             date_str VARCHAR(50) NOT NULL,
                             parsed_date TIMESTAMP NOT NULL,
+                            notes VARCHAR(255),
+                            age INTEGER,
+                            elapsed_time INTEGER,
+                            completion_count INTEGER,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                         )
@@ -251,13 +391,18 @@ class CreoleCreameryLLMScraper:
                         cur.execute(
                             """
                             INSERT INTO hall_of_fame_entries
-                            (participant_number, name, date_str, parsed_date)
-                            VALUES (%s, %s, %s, %s)
+                            (participant_number, name, date_str, parsed_date, notes, age, elapsed_time,
+                             completion_count)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                             ON CONFLICT (participant_number)
                             DO UPDATE SET
                                 name = EXCLUDED.name,
                                 date_str = EXCLUDED.date_str,
                                 parsed_date = EXCLUDED.parsed_date,
+                                notes = EXCLUDED.notes,
+                                age = EXCLUDED.age,
+                                elapsed_time = EXCLUDED.elapsed_time,
+                                completion_count = EXCLUDED.completion_count,
                                 updated_at = CURRENT_TIMESTAMP
                         """,
                             (
@@ -265,6 +410,10 @@ class CreoleCreameryLLMScraper:
                                 entry.name,
                                 entry.date,
                                 entry.parsed_date,
+                                entry.notes,
+                                entry.age,
+                                entry.elapsed_time,
+                                entry.completion_count,
                             ),
                         )
 
@@ -332,6 +481,36 @@ def lambda_handler(event, context):
 
 
 if __name__ == "__main__":
+    # Test the name parsing function first
+    def test_name_parsing():
+        print("=== Testing Name Parsing ===")
+        scraper = CreoleCreameryLLMScraper()
+
+        test_cases = [
+            "Bob Jones, 2nd time",  # Completion count with comma
+            "Mike Stevens, 3rd time",  # Completion count with comma
+            "Jill Smith 11 YEARS 5 MONTHS 21 DAYS",  # Age pattern (real format)
+            "STEVEN HAMMOND 7 MINUTES",  # Time pattern (real format)
+            "JOHN VALDESPINO 6 MINUTES 40 SECONDS",  # Time with seconds (real format)
+            "Jane Smith",  # Normal name, no notes
+            "Robert Brown, Jr.",  # Should NOT extract Jr. as notes
+            "Sarah Johnson, 1st time",  # First time completion
+            "Tom Davis 15 YEARS",  # Age without months/days
+            "Alice Wilson 3 MINUTES 15 SECONDS",  # Another time example
+        ]
+
+        for test_name in test_cases:
+            name, notes, age_days, elapsed_seconds, completion_count = (
+                scraper.parse_name_and_notes(test_name)
+            )
+            print(
+                f"'{test_name}' -> name: '{name}', notes: {notes}, "
+                f"age_days: {age_days}, elapsed_seconds: {elapsed_seconds}, completion_count: {completion_count}"
+            )
+        print()
+
+    test_name_parsing()
+
     # For local testing
 
     # Test with Beautiful Soup (default)
