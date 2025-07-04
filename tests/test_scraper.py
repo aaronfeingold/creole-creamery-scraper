@@ -6,6 +6,10 @@ Run this to test the scraper logic before deploying to Lambda.
 
 import os
 import sys
+
+# Add the project root to the Python path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from dotenv import load_dotenv
 from lambda_function import lambda_handler
 
