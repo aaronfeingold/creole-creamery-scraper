@@ -83,6 +83,8 @@ class CreoleCreameryLLMScraper:
             print(f"Beautiful Soup parsing failed: {str(e)}, falling back to regex")
             return self._fallback_regex_parse(html_content)
 
+    # DEPRECATED: LOL passing all the html to LLM too expensive $$$ i can just use beautiful soup, who cares
+    # saving for posterity
     def extract_with_llm(self, html_content: str) -> List[HallOfFameEntry]:
         """Use LLM to extract structured data from the HTML content (fallback method)."""
 
@@ -184,46 +186,6 @@ class CreoleCreameryLLMScraper:
             # Default to epoch if parsing fails
             return datetime(1970, 1, 1)
 
-    def _fallback_regex_parse(self, html_content: str) -> List[HallOfFameEntry]:
-        """Fallback regex parsing for HTML table structure."""
-        entries = []
-
-        # Updated pattern for HTML table structure
-        # Look for <td> tags with the data
-        soup = BeautifulSoup(html_content, "html.parser")
-
-        # Find all table rows
-        rows = soup.find_all("tr")
-
-        for row in rows:
-            cells = row.find_all("td")
-            if len(cells) >= 3:
-                try:
-                    number_text = cells[0].get_text(strip=True)
-                    name_text = cells[1].get_text(separator=" ", strip=True)
-                    date_text = cells[2].get_text(strip=True)
-
-                    # Extract number, handling extra spaces
-                    participant_number = int(number_text.strip())
-                    name = name_text.upper().strip()
-                    date = date_text.strip()
-
-                    parsed_date = self._parse_date(date)
-
-                    entry = HallOfFameEntry(
-                        participant_number=participant_number,
-                        name=name,
-                        date=date,
-                        parsed_date=parsed_date,
-                    )
-                    entries.append(entry)
-
-                except (ValueError, IndexError):
-                    continue
-
-        print(f"Regex fallback extracted {len(entries)} entries")
-        return sorted(entries, key=lambda x: x.participant_number, reverse=True)
-
     def get_last_entry_from_db(self) -> Optional[int]:
         """Get the highest participant number from the database."""
         try:
@@ -321,8 +283,15 @@ def lambda_handler(event, context):
         # Fetch the page content
         html_content = scraper.fetch_page_content()
 
-        # Extract entries using Beautiful Soup (primary method)
-        entries = scraper.extract_with_beautiful_soup(html_content)
+        # Check if we should use OpenAI LLM extraction
+        use_openai = event.get("use_openai", False) if event else False
+
+        if use_openai:
+            print("Using OpenAI LLM extraction method")
+            entries = scraper.extract_with_llm(html_content)
+        else:
+            print("Using Beautiful Soup extraction method (default)")
+            entries = scraper.extract_with_beautiful_soup(html_content)
 
         # Get last saved entry number
         last_saved_number = scraper.get_last_entry_from_db()
@@ -335,6 +304,9 @@ def lambda_handler(event, context):
             "body": json.dumps(
                 {
                     "message": f"Successfully processed {len(entries)} total entries",
+                    "extraction_method": (
+                        "OpenAI LLM" if use_openai else "Beautiful Soup"
+                    ),
                     "new_entries_saved": new_entries_count,
                     "last_saved_number": last_saved_number,
                     "highest_number_found": (
@@ -361,7 +333,16 @@ def lambda_handler(event, context):
 
 if __name__ == "__main__":
     # For local testing
+
+    # Test with Beautiful Soup (default)
+    print("=== Testing with Beautiful Soup (default) ===")
     test_event = {}
     test_context = {}
     result = lambda_handler(test_event, test_context)
     print(json.dumps(result, indent=2))
+
+    # Uncomment below to test with OpenAI LLM
+    # print("\n=== Testing with OpenAI LLM ===")
+    # test_event_openai = {"use_openai": True}
+    # result_openai = lambda_handler(test_event_openai, test_context)
+    # print(json.dumps(result_openai, indent=2))
