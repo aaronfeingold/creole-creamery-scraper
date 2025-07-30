@@ -92,6 +92,21 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ~1.0
+
+    - name: Create ECR repository
+      working-directory: terraform
+      env:
+        TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
+        TF_VAR_aws_region: ${{ env.AWS_REGION }}
+        TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
+      run: |
+        terraform init
+        terraform apply -target=aws_ecr_repository.scraper_repo -auto-approve
+
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
@@ -109,20 +124,13 @@ jobs:
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-    - name: Set up Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: ~1.0
-
-    - name: Deploy infrastructure
+    - name: Deploy complete infrastructure
       working-directory: terraform
       env:
         TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
         TF_VAR_aws_region: ${{ env.AWS_REGION }}
         TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
-      run: |
-        terraform init
-        terraform apply -auto-approve
+      run: terraform apply -auto-approve
 
     - name: Test deployed function
       run: |
