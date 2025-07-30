@@ -51,6 +51,49 @@ jobs:
         # Add any test commands here
         poetry run python -c "import lambda_function; print('Code syntax check passed')"
 
+    # Add Terraform validation for PRs
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ~1.0
+
+    - name: Initialize Terraform
+      working-directory: terraform
+      run: terraform init
+
+    - name: Validate Terraform
+      working-directory: terraform
+      run: terraform validate
+
+    - name: Plan Terraform (PR validation)
+      working-directory: terraform
+      env:
+        TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
+        TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+        TF_VAR_aws_region: ${{ env.AWS_REGION }}
+        TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
+      run: |
+        echo "Running Terraform plan for PR validation..."
+        terraform plan -detailed-exitcode
+
+        # Exit code 0 = no changes, 1 = error, 2 = changes
+        PLAN_EXIT_CODE=$?
+        if [ $PLAN_EXIT_CODE -eq 1 ]; then
+          echo "Terraform plan failed!"
+          exit 1
+        elif [ $PLAN_EXIT_CODE -eq 2 ]; then
+          echo "Terraform plan shows changes - this is expected for infrastructure updates"
+        else
+          echo "Terraform plan completed with no changes"
+        fi
+
   deploy:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
