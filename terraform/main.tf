@@ -40,6 +40,12 @@ variable "neon_database_url" {
   sensitive   = true
 }
 
+variable "image_tag" {
+  description = "Docker image tag to deploy"
+  type        = string
+  default     = "latest"
+}
+
 # ECR Repository for container images
 resource "aws_ecr_repository" "scraper_repo" {
   name                 = var.function_name
@@ -85,7 +91,7 @@ resource "aws_lambda_function" "scraper" {
   function_name = var.function_name
   role         = aws_iam_role.lambda_role.arn
   package_type = "Image"
-  image_uri    = "${aws_ecr_repository.scraper_repo.repository_url}:latest"
+  image_uri    = "${aws_ecr_repository.scraper_repo.repository_url}:${var.image_tag}"
 
   timeout     = 300  # 5 minutes
   memory_size = 512

@@ -120,6 +120,7 @@ jobs:
         TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
         TF_VAR_aws_region: ${{ env.AWS_REGION }}
         TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
+        TF_VAR_image_tag: ${{ github.sha }}
       run: |
         terraform init
         terraform apply -auto-approve
