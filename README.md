@@ -17,7 +17,6 @@ An LLM-powered web scraper that extracts Hall of Fame entries from the Creole Cr
 - **Amazon ECR**: Container image storage
 - **AWS EventBridge**: Daily scheduling
 - **Neon PostgreSQL**: Database storage
-- **OpenAI API**: Intelligent text extraction
 
 ## Prerequisites
 
@@ -36,7 +35,6 @@ Before deploying this project, ensure you have:
 
 ### External Services
 - **Neon Database**: PostgreSQL database instance
-- **OpenAI API**: API key for GPT-4 access
 
 ## Installation
 
@@ -101,7 +99,6 @@ Edit `terraform.tfvars` with your values:
 aws_region = "us-east-1"
 function_name = "creole-creamery-scraper"
 neon_database_url = "postgresql://username:password@hostname:port/database"
-openai_api_key = "sk-your-openai-api-key-here"
 ```
 
 ### Step 4: Deploy Infrastructure
@@ -126,7 +123,6 @@ chmod +x CICD/deploy.sh
 
 # Set environment variables and deploy
 export NEON_DATABASE_URL="your-database-url"
-export OPENAI_API_KEY="your-openai-key"
 export AWS_REGION="us-east-1"
 export FUNCTION_NAME="creole-creamery-scraper"
 

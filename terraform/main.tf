@@ -40,12 +40,6 @@ variable "neon_database_url" {
   sensitive   = true
 }
 
-variable "openai_api_key" {
-  description = "OpenAI API key"
-  type        = string
-  sensitive   = true
-}
-
 # ECR Repository for container images
 resource "aws_ecr_repository" "scraper_repo" {
   name                 = var.function_name
@@ -99,7 +93,6 @@ resource "aws_lambda_function" "scraper" {
   environment {
     variables = {
       NEON_DATABASE_URL = var.neon_database_url
-      OPENAI_API_KEY    = var.openai_api_key
     }
   }
 

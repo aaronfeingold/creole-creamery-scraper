@@ -5,7 +5,7 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-  workflow_dispatch:  # Allow manual triggers
+  workflow_dispatch:
 
 env:
   AWS_REGION: us-east-1
@@ -46,10 +46,36 @@ jobs:
     - name: Run tests
       env:
         NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       run: |
-        # Add any test commands here
         poetry run python -c "import lambda_function; print('Code syntax check passed')"
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ~1.0
+
+    - name: Initialize Terraform
+      working-directory: terraform
+      run: terraform init
+
+    - name: Validate Terraform
+      working-directory: terraform
+      run: terraform validate
+
+    - name: Plan Terraform (PR validation)
+      working-directory: terraform
+      env:
+        TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
+        TF_VAR_aws_region: ${{ env.AWS_REGION }}
+        TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
+      run: terraform plan -detailed-exitcode
 
   deploy:
     runs-on: ubuntu-latest
@@ -66,30 +92,6 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-
-    - name: Install Poetry
-      uses: snok/install-poetry@v1
-      with:
-        version: latest
-        virtualenvs-create: true
-        virtualenvs-in-project: true
-
-    - name: Install dependencies
-      run: poetry install --only=main --no-interaction --no-root
-
-    - name: Set up Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: ~1.0
-
-    - name: Get AWS Account ID
-      id: aws-account
-      run: echo "account-id=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
-
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
@@ -97,166 +99,33 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    - name: Initialize Terraform
-      working-directory: terraform
-      run: terraform init
-
-    # Check if ECR repository already exists and import if needed
-    - name: Check and Import ECR Repository
-      working-directory: terraform
-      env:
-        TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
-        TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-        TF_VAR_aws_region: ${{ env.AWS_REGION }}
-        TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
-      run: |
-        # Check if ECR repo exists
-        if aws ecr describe-repositories --repository-names ${{ env.FUNCTION_NAME }} --region ${{ env.AWS_REGION }} 2>/dev/null; then
-          echo "ECR repository exists, importing into Terraform state..."
-
-          # Try to import (will fail silently if already imported)
-          terraform import \
-            -var="neon_database_url=$TF_VAR_neon_database_url" \
-            -var="openai_api_key=$TF_VAR_openai_api_key" \
-            -var="aws_region=$TF_VAR_aws_region" \
-            -var="function_name=$TF_VAR_function_name" \
-            aws_ecr_repository.scraper_repo \
-            ${{ env.FUNCTION_NAME }} || echo "Repository already in state or import failed"
-        else
-          echo "ECR repository doesn't exist, will create it"
-
-          # Create just the ECR repository
-          terraform apply -target=aws_ecr_repository.scraper_repo -auto-approve \
-            -var="neon_database_url=$TF_VAR_neon_database_url" \
-            -var="openai_api_key=$TF_VAR_openai_api_key" \
-            -var="aws_region=$TF_VAR_aws_region" \
-            -var="function_name=$TF_VAR_function_name"
-        fi
-
-    # Check and import existing AWS resources
-    - name: Check and Import Existing AWS Resources
-      working-directory: terraform
-      env:
-        TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
-        TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-        TF_VAR_aws_region: ${{ env.AWS_REGION }}
-        TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
-      run: |
-        # Check and import IAM role
-        IAM_ROLE_NAME="${{ env.FUNCTION_NAME }}-lambda-role"
-        if aws iam get-role --role-name "$IAM_ROLE_NAME" 2>/dev/null; then
-          echo "IAM role $IAM_ROLE_NAME exists, importing into Terraform state..."
-          terraform import \
-            -var="neon_database_url=$TF_VAR_neon_database_url" \
-            -var="openai_api_key=$TF_VAR_openai_api_key" \
-            -var="aws_region=$TF_VAR_aws_region" \
-            -var="function_name=$TF_VAR_function_name" \
-            aws_iam_role.lambda_role \
-            "$IAM_ROLE_NAME" || echo "IAM role already in state or import failed"
-        else
-          echo "IAM role $IAM_ROLE_NAME doesn't exist, will create it"
-        fi
-
-        # Check and import CloudWatch log group
-        LOG_GROUP_NAME="/aws/lambda/${{ env.FUNCTION_NAME }}"
-        if aws logs describe-log-groups --log-group-name-prefix "$LOG_GROUP_NAME" --region ${{ env.AWS_REGION }} | grep -q "$LOG_GROUP_NAME"; then
-          echo "CloudWatch log group $LOG_GROUP_NAME exists, importing into Terraform state..."
-          terraform import \
-            -var="neon_database_url=$TF_VAR_neon_database_url" \
-            -var="openai_api_key=$TF_VAR_openai_api_key" \
-            -var="aws_region=$TF_VAR_aws_region" \
-            -var="function_name=$TF_VAR_function_name" \
-            aws_cloudwatch_log_group.lambda_logs \
-            "$LOG_GROUP_NAME" || echo "Log group already in state or import failed"
-        else
-          echo "CloudWatch log group $LOG_GROUP_NAME doesn't exist, will create it"
-        fi
-
-        # Check and import Lambda function if it exists
-        if aws lambda get-function --function-name ${{ env.FUNCTION_NAME }} --region ${{ env.AWS_REGION }} 2>/dev/null; then
-          echo "Lambda function ${{ env.FUNCTION_NAME }} exists, importing into Terraform state..."
-          terraform import \
-            -var="neon_database_url=$TF_VAR_neon_database_url" \
-            -var="openai_api_key=$TF_VAR_openai_api_key" \
-            -var="aws_region=$TF_VAR_aws_region" \
-            -var="function_name=$TF_VAR_function_name" \
-            aws_lambda_function.scraper \
-            "${{ env.FUNCTION_NAME }}" || echo "Lambda function already in state or import failed"
-        else
-          echo "Lambda function ${{ env.FUNCTION_NAME }} doesn't exist, will create it"
-        fi
-
-        # Check and import EventBridge rule if it exists
-        RULE_NAME="${{ env.FUNCTION_NAME }}-daily-trigger"
-        if aws events describe-rule --name "$RULE_NAME" --region ${{ env.AWS_REGION }} 2>/dev/null; then
-          echo "EventBridge rule $RULE_NAME exists, importing into Terraform state..."
-          terraform import \
-            -var="neon_database_url=$TF_VAR_neon_database_url" \
-            -var="openai_api_key=$TF_VAR_openai_api_key" \
-            -var="aws_region=$TF_VAR_aws_region" \
-            -var="function_name=$TF_VAR_function_name" \
-            aws_cloudwatch_event_rule.daily_trigger \
-            "$RULE_NAME" || echo "EventBridge rule already in state or import failed"
-        else
-          echo "EventBridge rule $RULE_NAME doesn't exist, will create it"
-        fi
-
-    # Build and push Docker image to the existing/created ECR repo
     - name: Build and push Docker image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         ECR_REPOSITORY: ${{ env.FUNCTION_NAME }}
         IMAGE_TAG: ${{ github.sha }}
       run: |
-        # Build image
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
-
-        # Push to ECR
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-        echo "Successfully pushed image to ECR"
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ~1.0
 
-    # Now apply the complete infrastructure
-    - name: Plan Complete Terraform Infrastructure
+    - name: Deploy infrastructure
       working-directory: terraform
       env:
         TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
-        TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
         TF_VAR_aws_region: ${{ env.AWS_REGION }}
         TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
-      run: terraform plan
+      run: |
+        terraform init
+        terraform apply -auto-approve
 
-    - name: Apply Complete Infrastructure
-      working-directory: terraform
-      env:
-        TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
-        TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-        TF_VAR_aws_region: ${{ env.AWS_REGION }}
-        TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
-      run: terraform apply -auto-approve
-
-    # Test the deployed function
     - name: Test deployed function
       run: |
-        echo "Waiting for function to be ready..."
         aws lambda wait function-updated --function-name ${{ env.FUNCTION_NAME }} --region ${{ env.AWS_REGION }}
-
-        echo "Testing function..."
-        aws lambda invoke \
-          --function-name ${{ env.FUNCTION_NAME }} \
-          --region ${{ env.AWS_REGION }} \
-          --payload '{}' \
-          response.json
-
-        echo "Function test response:"
+        aws lambda invoke --function-name ${{ env.FUNCTION_NAME }} --region ${{ env.AWS_REGION }} --payload '{}' response.json
         cat response.json
-
-    - name: Notify deployment success
-      if: success()
-      run: |
-        echo "Deployment completed successfully!"
-        echo "Function: ${{ env.FUNCTION_NAME }}"
-        echo "Region: ${{ env.AWS_REGION }}"
-        echo "Commit: ${{ github.sha }}"
