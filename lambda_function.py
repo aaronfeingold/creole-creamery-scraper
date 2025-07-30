@@ -4,7 +4,6 @@ import requests
 from datetime import datetime
 from typing import List, Optional, Tuple
 import psycopg2
-import openai
 from dataclasses import dataclass
 from bs4 import BeautifulSoup
 import re
@@ -25,8 +24,8 @@ class HallOfFameEntry:
 
 
 class CreoleCreameryLLMScraper:
+
     def __init__(self):
-        self.openai_client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
         self.db_url = os.environ["NEON_DATABASE_URL"]
         self.base_url = "https://creolecreamery.com/hall-of-fame/"
 
@@ -221,96 +220,6 @@ class CreoleCreameryLLMScraper:
             print(f"Beautiful Soup parsing failed: {str(e)}")
             raise Exception(f"HTML parsing failed: {str(e)}")
 
-    # DEPRECATED: LOL passing all the html to LLM too expensive $$$ i can just use beautiful soup, who cares
-    # saving for posterity
-    def extract_with_llm(self, html_content: str) -> List[HallOfFameEntry]:
-        """Use LLM to extract structured data from the HTML content (fallback method)."""
-
-        # For LLM, let's extract just the table portion to save tokens
-        soup = BeautifulSoup(html_content, "html.parser")
-        tbody = soup.find("tbody", class_="row-hover")
-
-        if tbody:
-            table_html = str(tbody)[:4000]  # Limit to 4000 chars to save tokens
-        else:
-            table_html = html_content[:4000]
-
-        prompt = f"""
-        Extract all hall of fame entries from this HTML table. Each row has 3 columns:
-        1. Participant number (integer)
-        2. Name (may contain line breaks)
-        3. Date (M/D/YY format)
-
-        Return ONLY a valid JSON array with this structure:
-        [
-            {{
-                "participant_number": 748,
-                "name": "PHILLIP FANGUE",
-                "date": "5/11/25"
-            }}
-        ]
-
-        Rules:
-        1. Extract ALL entries from the table
-        2. participant_number should be an integer
-        3. name should be cleaned of HTML tags and line breaks
-        4. date should be the exact date string as shown
-        5. Return ONLY the JSON array, no other text
-
-        HTML Table:
-        {table_html}
-        """
-
-        try:
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a precise data extraction assistant. Return only valid JSON.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0,
-                max_tokens=4000,
-            )
-
-            response_text = response.choices[0].message.content.strip()
-
-            # Clean up the response
-            if response_text.startswith("```json"):
-                response_text = response_text[7:]
-            if response_text.endswith("```"):
-                response_text = response_text[:-3]
-
-            entries_data = json.loads(response_text)
-
-            # Convert to HallOfFameEntry objects
-            entries = []
-            for entry_data in entries_data:
-                parsed_date = self._parse_date(entry_data["date"])
-                name, notes, age_days, elapsed_seconds, completion_count = (
-                    self.parse_name_and_notes(entry_data["name"])
-                )
-                entry = HallOfFameEntry(
-                    participant_number=int(entry_data["participant_number"]),
-                    name=name,
-                    date=entry_data["date"],
-                    parsed_date=parsed_date,
-                    notes=notes,
-                    age=age_days,
-                    elapsed_time=elapsed_seconds,
-                    completion_count=completion_count,
-                )
-                entries.append(entry)
-
-            print(f"Successfully extracted {len(entries)} entries using LLM")
-            return sorted(entries, key=lambda x: x.participant_number, reverse=True)
-
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
-            print(f"LLM parsing failed: {str(e)}")
-            raise Exception(f"LLM parsing failed: {str(e)}")
-
     def _parse_date(self, date_str: str) -> datetime:
         """Parse date string to datetime object, handling 2-digit years."""
         try:
@@ -441,15 +350,7 @@ def lambda_handler(event, context):
         # Fetch the page content
         html_content = scraper.fetch_page_content()
 
-        # Check if we should use OpenAI LLM extraction
-        use_openai = event.get("use_openai", False) if event else False
-
-        if use_openai:
-            print("Using OpenAI LLM extraction method")
-            entries = scraper.extract_with_llm(html_content)
-        else:
-            print("Using Beautiful Soup extraction method (default)")
-            entries = scraper.extract_with_beautiful_soup(html_content)
+        entries = scraper.extract_with_beautiful_soup(html_content)
 
         # Get last saved entry number
         last_saved_number = scraper.get_last_entry_from_db()
@@ -462,9 +363,7 @@ def lambda_handler(event, context):
             "body": json.dumps(
                 {
                     "message": f"Successfully processed {len(entries)} total entries",
-                    "extraction_method": (
-                        "OpenAI LLM" if use_openai else "Beautiful Soup"
-                    ),
+                    "extraction_method": "Beautiful Soup",
                     "new_entries_saved": new_entries_count,
                     "last_saved_number": last_saved_number,
                     "highest_number_found": (
@@ -532,9 +431,3 @@ if __name__ == "__main__":
     test_context = {}
     result = lambda_handler(test_event, test_context)
     print(json.dumps(result, indent=2))
-
-    # Uncomment below to test with OpenAI LLM
-    # print("\n=== Testing with OpenAI LLM ===")
-    # test_event_openai = {"use_openai": True}
-    # result_openai = lambda_handler(test_event_openai, test_context)
-    # print(json.dumps(result_openai, indent=2))
