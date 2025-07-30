@@ -98,10 +98,6 @@ resource "aws_lambda_function" "scraper" {
 
   # Depends on the image being pushed to ECR
   depends_on = [aws_ecr_repository.scraper_repo]
-
-  lifecycle {
-    ignore_changes = [image_uri]
-  }
 }
 
 # CloudWatch Log Group
