@@ -97,16 +97,6 @@ jobs:
       with:
         terraform_version: ~1.0
 
-    - name: Create ECR repository
-      working-directory: terraform
-      env:
-        TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
-        TF_VAR_aws_region: ${{ env.AWS_REGION }}
-        TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
-      run: |
-        terraform init
-        terraform apply -target=aws_ecr_repository.scraper_repo -auto-approve
-
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
@@ -130,7 +120,9 @@ jobs:
         TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
         TF_VAR_aws_region: ${{ env.AWS_REGION }}
         TF_VAR_function_name: ${{ env.FUNCTION_NAME }}
-      run: terraform apply -auto-approve
+      run: |
+        terraform init
+        terraform apply -auto-approve
 
     - name: Test deployed function
       run: |
